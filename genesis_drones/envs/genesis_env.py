@@ -38,7 +38,7 @@ class Genesis_env:
             self.num_envs = self.env_config.get("num_envs", 1)
         else:
             self.num_envs = num_envs
-        self.dt = self.env_config.get("dt", 0.01)           # default sim env update in 100hz
+        self.dt = self.env_config.get("dt", 0.01)
         self.cam_quat = torch.tensor(self.env_config.get("cam_quat", [0.5, 0.5, -0.5, -0.5]), device=self.device, dtype=gs.tc_float).expand(self.num_envs, -1)
         self.cam_pos = torch.tensor(self.env_config.get("cam_pos", [0.0, 0.0, 0.0]), device=self.device, dtype=gs.tc_float).expand(self.num_envs, -1)
         
@@ -85,7 +85,7 @@ class Genesis_env:
         
         # set viewer
         if self.env_config["viewer_follow_drone"] is True:
-            self.scene.viewer.follow_entity(self.drone)  # follow drone
+            self.scene.viewer.follow_entity(self.drone)
         
         # add odom for drone
         self.set_drone_odom()
@@ -100,22 +100,54 @@ class Genesis_env:
         # add target
         self.set_target_phere_for_vis()
 
+        # add IMU sensor (Genesis native)
+        self._add_imu_sensor()
+
         # build world
         self.scene.build(n_envs = self.num_envs)
 
         # init
         self.drone_init_pos = self.drone.get_pos()
         self.drone_init_quat = self.drone.get_quat()
-        self.drone.set_dofs_damping(torch.tensor([0.0, 0.0, 0.0, 1e-4, 1e-4, 1e-4]))  # Set damping to a small value to avoid numerical instability
+        self.drone.set_dofs_damping(torch.tensor([0.0, 0.0, 0.0, 1e-4, 1e-4, 1e-4]))
 
+    def _add_imu_sensor(self):
+        imu_config = self.env_config.get("imu_sensor", {})
+        self.imu_sensor = self.scene.add_sensor(
+            gs.sensors.IMU(
+                entity_idx=self.drone.idx,
+                pos_offset=(0.0, 0.0, 0.0),
+                acc_noise=imu_config.get("acc_noise", (0.0, 0.0, 0.0)),
+                gyro_noise=imu_config.get("gyro_noise", (0.0, 0.0, 0.0)),
+                acc_random_walk=imu_config.get("acc_random_walk", (0.0, 0.0, 0.0)),
+                gyro_random_walk=imu_config.get("gyro_random_walk", (0.0, 0.0, 0.0)),
+                delay=imu_config.get("delay", 0.0),
+                jitter=imu_config.get("jitter", 0.0),
+            )
+        )
+
+    def read_imu(self):
+        data = self.imu_sensor.read()
+        return data
+
+    def get_entities(self):
+        return list(self.scene.entities)
+
+    def get_entity_by_name(self, name):
+        for e in self.scene.entities:
+            if hasattr(e, 'name') and e.name == name:
+                return e
+        return None
+
+    def get_entities_by_filter(self, filter_fn):
+        return [e for e in self.scene.entities if filter_fn(e)]
 
     def step(self, action=None): 
         self.scene.step()
         if self.render_cam:
             self.drone.cam.set_FPV_cam_pose()
-            self.drone.cam.depth = self.drone.cam.render(rgb=True, depth=True)[1]   # [1] is idx of depth img
+            self.drone.cam.depth = self.drone.cam.render(rgb=True, depth=True)[1]
         self.drone.controller.step(action)
-
 
     def set_drone_odom(self):
         odom = Odom(
@@ -137,9 +169,6 @@ class Genesis_env:
             )
         def set_FPV_cam_pose(self):
             self.cam.set_pose(
-                # pos = self.get_pos() + self.cam.cam_pos,
-                # lookat = self.get_pos() + self.cam.cam_pos + 1,
-                # up = (0, 1, 0),
                 transform = trans_quat_to_T(trans = self.get_pos() + self.cam.cam_pos, 
                                             quat = transform_quat_by_quat(self.cam.cam_quat, self.odom.body_quat))
             )
@@ -202,12 +231,6 @@ class Genesis_env:
         )
 
     def get_aabb_list(self):
-        """
-        Get a set of bounding box vertices of occupations
-
-        :param: none
-        :return: list(torch.tensor(num_envs, 2, 3))
-        """
         aabb_list = []
         for entity in self.scene.entities:
             if entity.idx == self.plane.idx or (self.target is not None and entity.idx == self.target.idx):
